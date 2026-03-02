@@ -144,7 +144,7 @@ def _history_rows(released_frames: list[IncidentState]) -> list[dict[str, object
 
 
 def _render_global_view(
-    live_state: IncidentState,
+    _live_state: IncidentState,
     released_frames: list[IncidentState],
 ) -> int | None:
     """Render the original main dashboard under the camera map."""
@@ -152,22 +152,16 @@ def _render_global_view(
     _render_bolo_card()
     live_tab, history_tab = st.tabs(["Live Incident", "Incident History"])
     with live_tab:
-        frame_bytes = _frame_bytes(str(live_state.get("frame_b64", "")))
-        if frame_bytes:
-            st.image(frame_bytes, width="stretch")
-        if released_frames:
-            if render_report_card(live_state, True, "global_live"):
-                return int(live_state.get("frame_index", 0))
+        if not released_frames:
+            _render_waiting_state()
+        else:
             selected = _timeline_frame(released_frames)
             if selected is not None:
-                st.markdown("**Selected Frame**")
                 selected_bytes = _frame_bytes(str(selected.get("frame_b64", "")))
-                if selected_bytes and int(selected.get("frame_index", 0)) != int(live_state.get("frame_index", 0)):
+                if selected_bytes:
                     st.image(selected_bytes, width="stretch")
-                if render_report_card(selected, True, f"global_timeline_{int(selected.get('frame_index', 0))}"):
+                if render_report_card(selected, True, "global_live"):
                     return int(selected.get("frame_index", 0))
-        else:
-            _render_waiting_state()
     with history_tab:
         if not released_frames:
             st.info("No incidents recorded yet.")

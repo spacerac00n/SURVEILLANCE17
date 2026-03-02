@@ -167,9 +167,16 @@ def render_report_card(
                 ]
             )
         )
+        confirmed = False
         score_col, badge_col = st.columns(2)
         score_col.metric("Risk Score", f"{float(details.get('risk_score', 0.0)):.1f}")
         with badge_col:
+            if show_confirm and str(status.get("dispatch_status", "")) == "awaiting_confirmation":
+                confirmed = st.button(
+                    "Confirm Dispatch",
+                    type="primary",
+                    key=f"confirm_dispatch_{int(state.get('frame_index', 0))}_{key_suffix}",
+                )
             st.caption("Threat Level")
             st.markdown(
                 f"<div style='padding:0.75rem;background:{COLOR_CRITERIA[color]['hex']};"
@@ -180,13 +187,6 @@ def render_report_card(
         st.markdown("**What Is Happening**")
         st.write(summary or "No incident summary available.")
         st.caption(observed)
-        confirmed = False
-        if show_confirm and str(status.get("dispatch_status", "")) == "awaiting_confirmation":
-            confirmed = st.button(
-                "Confirm Dispatch",
-                type="primary",
-                key=f"confirm_dispatch_{int(state.get('frame_index', 0))}_{key_suffix}",
-            )
         with st.expander("Why This Color", expanded=False):
             st.write(build_color_reason(record))
         with st.expander("Other Data", expanded=False):

@@ -150,15 +150,21 @@ def _release_ready_frames() -> None:
     """Release completed frames in strict sequence order."""
     released = st.session_state["released_frames"]
     next_index = int(st.session_state["next_release_index"])
+    released_any = False
     while next_index in st.session_state["completed_buffer"]:
         result = st.session_state["completed_buffer"].pop(next_index)
         released.append(result)
         st.session_state["latest_live_frame_index"] = next_index
         st.session_state["incident_state"] = result
+        released_any = True
         next_index += 1
     st.session_state["next_release_index"] = next_index
     if len(released) > TIMELINE_WINDOW_SIZE:
         del released[:-TIMELINE_WINDOW_SIZE]
+    if released_any:
+        latest_index = int(st.session_state.get("latest_live_frame_index", 0))
+        st.session_state["selected_timeline_frame_index"] = latest_index
+        st.session_state["live_timeline_slider"] = latest_index
     valid_indices = {int(frame["frame_index"]) for frame in released}
     selected = int(st.session_state.get("selected_timeline_frame_index", 0))
     if selected not in valid_indices:
