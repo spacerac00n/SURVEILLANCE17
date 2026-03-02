@@ -8,14 +8,14 @@ import streamlit as st
 
 from config import CAMERA_PROFILE, FRAME_INTERVAL_SECONDS, LIVE_CAMERAS
 from features.agents.context_enricher import enrich_context
-from features.agents.dispatch_agent import dispatch_incident, save_frame_snapshot
+from features.agents.dispatch_agent import dispatch_incident
 from features.agents.escalation_agent import escalate_incident
 from features.agents.graph import IncidentState, default_state
 from features.agents.record_formatter import format_incident_record
 from features.audit.audit_logger import log_incident, next_case_id
 from features.detection.vlm_detector import vlm_detect
 from features.risk.risk_scorer import score_risk
-from features.tracking.tracking_agent import check_reacquisition
+from features.tracking.tracking_agent import check_tracking_match
 def _encode(frame: object) -> str:
     """Return one OpenCV frame as base64 JPEG."""
     ok, buffer = cv2.imencode(".jpg", frame)
@@ -64,9 +64,15 @@ def start_camera_pipeline(camera_id: str) -> None:
         state = default_state()
         state.update({"case_id": next_case_id(), "frame_b64": str(packet["frame_b64"]), "frame_index": int(packet["frame_index"]), "source_offset_seconds": float(packet["source_offset_seconds"])})
         result = run_incident_pipeline(state, camera_id)
-        if camera_id == LIVE_CAMERAS[1]["camera_id"] and st.session_state["tracking"]["bolo_active"]:
-            result["frame_path"] = save_frame_snapshot(result)
-            check_reacquisition(result["frame_b64"], camera_id, str(result.get("frame_path", "")))
+        if camera_id == LIVE_CAMERAS[1]["camera_id"] and st.session_state["tracking"]["active"]:
+            check_tracking_match(
+                result["frame_b64"],
+                camera_id,
+                int(result.get("frame_index", 0)),
+                float(result.get("source_offset_seconds", 0.0)),
+                bool(result.get("threat_detected", False)),
+                str(result.get("frame_description", "")),
+            )
         result.update(log_incident(result))
         cameras[camera_id] = {**cameras[camera_id], "current_frame": result["frame_b64"], "incidents": list(cameras[camera_id]["incidents"]) + [result]}
         st.session_state["cameras"] = cameras

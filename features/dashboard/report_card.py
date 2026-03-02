@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import threading
+from datetime import datetime, timezone
 
 import streamlit as st
-from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
-from config import COLOR_CRITERIA
+from config import COLOR_CRITERIA, LIVE_CAMERAS
 from features.agents.graph import IncidentState
 from features.agents.record_formatter import build_ai_incident_record
 from features.tracking.tracking_agent import start_tracking
@@ -81,55 +80,75 @@ def render_decision_reasoning(record: dict[str, object]) -> None:
         st.write(str(stage_data.get("summary", "")))
 
 
+def _source_camera_id(state: IncidentState) -> str:
+    """Map the demo's default stream to Camera 1 for tracking."""
+    camera_id = str(state.get("camera_profile", {}).get("camera_id", ""))
+    live_ids = {camera["camera_id"] for camera in LIVE_CAMERAS}
+    return camera_id if camera_id in live_ids else LIVE_CAMERAS[0]["camera_id"]
+
+
+def _priority_from_state(state: IncidentState) -> str:
+    """Map the incident color into the Track Card priority scale."""
+    color = str(state.get("threat_color", "")).strip().lower()
+    if color in {"red", "orange"}:
+        return "red"
+    if color == "yellow":
+        return "yellow"
+    return "green"
+
+
 def _start_tracking(state: IncidentState) -> None:
-    """Seed tracking state and launch Agent 2 in a background thread."""
-    tracking = {
-        **dict(st.session_state["tracking"]),
+    """Seed the Track Card state for the hackathon demo."""
+    tracking: TrackingState = {
         "active": True,
-        "camera_id": str(state.get("camera_profile", {}).get("camera_id", "")),
+        "source_camera_id": _source_camera_id(state),
+        "search_camera_id": LIVE_CAMERAS[1]["camera_id"],
         "subject_description": str(state.get("frame_description", "")),
-        "observations": [],
-        "consecutive_lost_count": 0,
-        "subject_lost": False,
-        "subject_lost_timestamp": "",
-        "bolo_active": False,
-        "bolo_text": "",
-        "reacquired": False,
-        "reacquired_camera_id": "",
-        "reacquired_frame_path": None,
-        "reacquired_timestamp": "",
-        "reacquired_confidence": "",
+        "user_extra_context": str(st.session_state["tracking"].get("user_extra_context", "")),
+        "priority": _priority_from_state(state),
+        "photo_b64": "",
+        "photo_name": "",
+        "sightings": [],
+        "last_sighting": {},
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "show_builder": False,
     }
-    st.session_state["tracking"] = tracking
-    thread = threading.Thread(
-        target=start_tracking,
-        args=(TrackingState(**dict(tracking)),),
-        daemon=True,
-    )
-    add_script_run_ctx(thread, get_script_run_ctx())
-    thread.start()
+    start_tracking(tracking)
 
 
 def _render_tracking_controls(state: IncidentState, key_suffix: str) -> None:
-    """Render the track button and operator context input."""
+    """Render the track button first, then the context input after activation."""
+    if _source_camera_id(state) != LIVE_CAMERAS[0]["camera_id"]:
+        return
     tracking = dict(st.session_state["tracking"])
-    input_key = "tracking_context_input" if key_suffix == "active" else f"tracking_context_{key_suffix}"
+    is_active = bool(tracking.get("active"))
+    button_label = "TRACKING ACTIVE" if is_active else "Track"
+    if st.button(
+        button_label,
+        key=f"track_person_{key_suffix}",
+        disabled=is_active,
+        use_container_width=True,
+    ):
+        _start_tracking(state)
+        st.rerun()
+    if not is_active:
+        return
+    input_key = (
+        "tracking_context_input"
+        if key_suffix == "active"
+        else f"tracking_context_{key_suffix}"
+    )
     if input_key not in st.session_state:
         st.session_state[input_key] = str(tracking.get("user_extra_context", ""))
-    action_col, input_col = st.columns((1, 2))
-    with action_col:
-        disabled = bool(tracking.get("active")) or bool(tracking.get("bolo_active"))
-        label = "TRACKING ACTIVE" if disabled else "Track"
-        if st.button(label, key=f"track_person_{key_suffix}", disabled=disabled):
-            _start_tracking(state)
-            st.rerun()
-    with input_col:
-        value = st.text_input(
-            "Add context for tracking agent (optional)",
-            key=input_key,
-            placeholder="e.g. suspect heading toward exit B",
-        )
-    st.session_state["tracking"] = {**dict(st.session_state["tracking"]), "user_extra_context": value}
+    value = st.text_input(
+        "Add context for tracking agent (optional)",
+        key=input_key,
+        placeholder="e.g. suspect heading toward exit B",
+    )
+    st.session_state["tracking"] = {
+        **dict(st.session_state["tracking"]),
+        "user_extra_context": value,
+    }
 
 
 def render_report_card(
@@ -159,6 +178,7 @@ def render_report_card(
         container = st.container()
     with container:
         st.subheader("Report Card")
+        _render_tracking_controls(state, key_suffix)
         st.caption(
             " | ".join(
                 [
@@ -194,5 +214,4 @@ def render_report_card(
             st.write(str(record.get("timestamp", "")) or "Not available.")
             st.markdown("**Decision Reasoning Path**")
             render_decision_reasoning(record)
-        _render_tracking_controls(state, key_suffix)
     return confirmed if show_confirm else False

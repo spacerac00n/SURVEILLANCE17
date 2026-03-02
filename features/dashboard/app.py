@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 import base64
-import html
 import threading
 import time
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 
 import streamlit as st
 from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 
-from config import DATA_DIR, LIVE_CAMERAS
+from config import DATA_DIR, HARDCODED_CAMERAS, LIVE_CAMERAS
 from features.agents.dispatch_agent import dispatch_incident
 from features.agents.graph import IncidentState
 from features.agents.pipeline_runner import start_camera_pipeline
 from features.agents.record_formatter import build_ai_incident_record, format_incident_record
 from features.audit.audit_logger import get_audit_by_camera, log_incident
+from features.dashboard.police_chat import notify_red_threat, render_police_chat
 from features.dashboard.report_card import render_report_card
 from features.tracking.camera_map import render_camera_map
 from features.tracking.tracking_state import TrackingState
@@ -23,7 +24,20 @@ from features.tracking.tracking_state import TrackingState
 
 def _tracking_state() -> TrackingState:
     """Return the default tracking state."""
-    return TrackingState(active=False, camera_id="", subject_description="", user_extra_context="", observations=[], consecutive_lost_count=0, subject_lost=False, subject_lost_timestamp="", bolo_active=False, bolo_text="", reacquired=False, reacquired_camera_id="", reacquired_frame_path=None, reacquired_timestamp="", reacquired_confidence="")
+    return {
+        "active": False,
+        "source_camera_id": "",
+        "search_camera_id": LIVE_CAMERAS[1]["camera_id"],
+        "subject_description": "",
+        "user_extra_context": "",
+        "priority": "yellow",
+        "photo_b64": "",
+        "photo_name": "",
+        "sightings": [],
+        "last_sighting": {},
+        "started_at": "",
+        "show_builder": False,
+    }
 
 
 def init_session_state(default_state: IncidentState) -> None:
@@ -74,14 +88,192 @@ def _confirm_camera_incident(camera_id: str, case_id: str) -> None:
         return
 
 
-def _render_bolo_card() -> None:
-    """Render the global BOLO card and any re-acquisition details."""
+def _stop_tracking() -> None:
+    """Stop the active Track Card without clearing recorded sightings."""
     tracking = dict(st.session_state["tracking"])
-    if not tracking["bolo_active"]:
-        return
-    st.markdown("<div style='background:#2c0a0a;color:white;padding:20px;border-radius:14px;'><div style='color:#e74c3c;font-weight:700;'>⚠ BOLO ISSUED — " + html.escape(str(tracking["subject_lost_timestamp"])) + "</div><pre style='margin:12px 0 0;white-space:pre-wrap;font-family:monospace;color:white;'>" + html.escape(str(tracking["bolo_text"])) + ("</pre><hr style='border:0;border-top:2px solid #2ecc71;'><div style='color:#2ecc71;font-weight:700;'>✅ SUBJECT RE-ACQUIRED — " + html.escape(str(tracking["reacquired_timestamp"])) + "</div><div>Camera: " + html.escape(str(tracking["reacquired_camera_id"])) + "</div><div>Confidence: " + html.escape(str(tracking["reacquired_confidence"])) + "</div>" if tracking["reacquired"] else "</pre>") + "</div>", unsafe_allow_html=True)
-    if tracking["reacquired_frame_path"]:
-        st.image(str(tracking["reacquired_frame_path"]), width=200)
+    st.session_state["tracking"] = {**tracking, "active": False}
+
+
+def _priority_style(priority: str) -> tuple[str, str]:
+    """Return the color and label for a Track Card priority."""
+    normalized = str(priority).strip().lower()
+    if normalized == "red":
+        return "#ff5f57", "Critical"
+    if normalized == "green":
+        return "#49d17d", "Not urgent"
+    return "#f0d55b", "Urgent"
+
+
+def _open_manual_track_builder() -> None:
+    """Expose the manual Track Card builder."""
+    tracking = dict(st.session_state["tracking"])
+    st.session_state["tracking"] = {**tracking, "show_builder": True}
+
+
+def _create_manual_track_card(
+    description: str,
+    priority: str,
+    photo_b64: str,
+    photo_name: str,
+) -> None:
+    """Create or replace the Track Card from manual operator input."""
+    current = dict(st.session_state["tracking"])
+    st.session_state["tracking"] = {
+        **current,
+        "active": True,
+        "source_camera_id": current.get("source_camera_id") or LIVE_CAMERAS[0]["camera_id"],
+        "search_camera_id": LIVE_CAMERAS[1]["camera_id"],
+        "subject_description": description,
+        "priority": priority,
+        "photo_b64": photo_b64,
+        "photo_name": photo_name,
+        "sightings": [],
+        "last_sighting": {},
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "show_builder": False,
+    }
+
+
+def _render_track_card() -> None:
+    """Render the global Track Card and any positive sightings."""
+    tracking = dict(st.session_state["tracking"])
+    sightings = list(tracking.get("sightings", []))
+    last_sighting = dict(tracking.get("last_sighting", {}))
+    is_active = bool(tracking.get("active"))
+    status_label = "Active" if is_active else "Non Active"
+    priority_color, priority_label = _priority_style(str(tracking.get("priority", "yellow")))
+    icon_col, title_col, action_col = st.columns((0.45, 8, 0.9))
+    with icon_col:
+        st.markdown(
+            f"<div style='width:18px;height:18px;margin-top:0.35rem;border-radius:999px;"
+            f"background:{priority_color};box-shadow:0 0 12px {priority_color};'></div>",
+            unsafe_allow_html=True,
+        )
+    with title_col:
+        st.markdown("**Track Card**")
+    with action_col:
+        if st.button("+", key="open_track_card_builder", help="Create Track Card manually"):
+            _open_manual_track_builder()
+            st.rerun()
+    with st.expander(f"Track Card ({status_label})", expanded=is_active or bool(sightings) or bool(tracking.get("show_builder"))):
+        st.caption(
+            " | ".join(
+                [
+                    f"Status: {status_label}",
+                    f"Priority: {priority_label}",
+                    f"Source: {tracking.get('source_camera_id', 'n/a')}",
+                    f"Search: {tracking.get('search_camera_id', 'n/a')}",
+                    f"Sightings: {len(sightings)}",
+                ]
+            )
+        )
+        builder_open = bool(tracking.get("show_builder"))
+        if builder_open:
+            if is_active or sightings:
+                st.caption("Creating a new Track Card replaces the current subject and clears prior sightings.")
+            uploaded_photo = st.file_uploader(
+                "Upload target photo",
+                type=["png", "jpg", "jpeg"],
+                key="manual_track_photo",
+            )
+            description = st.text_area(
+                "What should be tracked?",
+                value=str(tracking.get("subject_description", "")),
+                key="manual_track_description",
+                placeholder="Describe the person, outfit, or distinguishing features.",
+            )
+            priority = st.selectbox(
+                "Safety priority",
+                options=["green", "yellow", "red"],
+                index=max(["green", "yellow", "red"].index(str(tracking.get("priority", "yellow")).lower()) if str(tracking.get("priority", "yellow")).lower() in {"green", "yellow", "red"} else 1, 0),
+                key="manual_track_priority",
+                format_func=lambda value: {
+                    "green": "Not urgent (green)",
+                    "yellow": "Urgent (yellow)",
+                    "red": "Critical (red)",
+                }.get(value, str(value)),
+            )
+            build_col, cancel_col = st.columns(2)
+            missing_description = False
+            with build_col:
+                if st.button("Create Track Card", key="submit_manual_track_card", use_container_width=True):
+                    if description.strip():
+                        photo_b64 = (
+                            base64.b64encode(uploaded_photo.getvalue()).decode("utf-8")
+                            if uploaded_photo is not None
+                            else ""
+                        )
+                        photo_name = str(getattr(uploaded_photo, "name", "")) if uploaded_photo is not None else ""
+                        _create_manual_track_card(
+                            description.strip(),
+                            str(priority).lower(),
+                            photo_b64,
+                            photo_name,
+                        )
+                        st.rerun()
+                    else:
+                        missing_description = True
+            with cancel_col:
+                if st.button("Cancel", key="cancel_manual_track_card", use_container_width=True):
+                    st.session_state["tracking"] = {**dict(st.session_state["tracking"]), "show_builder": False}
+                    st.rerun()
+            if missing_description:
+                st.warning("Add a description before creating a manual Track Card.")
+        st.markdown("**Target Description**")
+        st.write(str(tracking.get("subject_description", "")) or "Not available.")
+        photo_bytes = _frame_bytes(str(tracking.get("photo_b64", "")))
+        if photo_bytes:
+            st.image(photo_bytes, width=180)
+            if tracking.get("photo_name"):
+                st.caption(f"Reference photo: {tracking.get('photo_name')}")
+        if tracking.get("user_extra_context"):
+            st.caption(f"Operator context: {tracking.get('user_extra_context')}")
+        if tracking.get("started_at"):
+            st.caption(f"Started: {tracking.get('started_at')}")
+        if is_active:
+            if st.button("Stop Tracking", key="stop_tracking_card"):
+                _stop_tracking()
+                st.rerun()
+        elif not sightings:
+            st.caption("No active tracking session.")
+        if last_sighting:
+            st.success(
+                "Tracking suspect spotted on "
+                f"{last_sighting.get('last_seen_camera', last_sighting.get('camera_id', ''))} "
+                f"(confidence: {last_sighting.get('confidence', 'low')})"
+            )
+            st.write(
+                "Last seen: "
+                f"{last_sighting.get('last_seen_camera', last_sighting.get('camera_id', 'unknown'))} | "
+                f"{last_sighting.get('last_seen_timestamp', last_sighting.get('timestamp', ''))}"
+            )
+            st.write(
+                "Latest position: "
+                f"{last_sighting.get('last_position', 'unknown')} | "
+                f"Frame {last_sighting.get('frame_index', 0)} | "
+                f"Source time {float(last_sighting.get('source_offset_seconds', 0.0)):.1f}s"
+            )
+            if last_sighting.get("notes"):
+                st.caption(str(last_sighting.get("notes", "")))
+        if sightings:
+            with st.expander(f"Sightings Log ({len(sightings)})", expanded=bool(last_sighting)):
+                for index, sighting in enumerate(reversed(sightings), start=1):
+                    st.markdown(
+                        f"**{index}. Last Seen: {sighting.get('last_seen_camera', sighting.get('camera_id', ''))}** "
+                        f"- confidence `{sighting.get('confidence', 'low')}`"
+                    )
+                    st.caption(
+                        f"Timestamp: {sighting.get('last_seen_timestamp', sighting.get('timestamp', ''))} | "
+                        f"Frame {sighting.get('frame_index', 0)} | "
+                        f"Source time {float(sighting.get('source_offset_seconds', 0.0)):.1f}s"
+                    )
+                    details = []
+                    if sighting.get("last_position"):
+                        details.append(f"Position: {sighting.get('last_position')}")
+                    if sighting.get("notes"):
+                        details.append(f"Notes: {sighting.get('notes')}")
+                    if details:
+                        st.write(" | ".join(details))
 
 
 def _render_incident(incident: dict[str, object], key_suffix: str) -> None:
@@ -89,6 +281,28 @@ def _render_incident(incident: dict[str, object], key_suffix: str) -> None:
     if render_report_card(incident, True, key_suffix):
         _confirm_camera_incident(str(incident.get("camera_profile", {}).get("camera_id", "")), str(incident.get("case_id", "")))
         st.rerun()
+
+
+def _camera_name(camera_id: str) -> str:
+    """Return the dashboard label for a camera identifier."""
+    for camera in LIVE_CAMERAS:
+        if str(camera["camera_id"]) == camera_id:
+            return str(camera["name"])
+    for camera in HARDCODED_CAMERAS:
+        if str(camera["camera_id"]) == camera_id:
+            return str(camera["name"])
+    return camera_id or LIVE_CAMERAS[0]["name"]
+
+
+def _sync_police_chat_alerts(released_frames: list[IncidentState]) -> None:
+    """Publish one dispatch alert for each red-priority incident."""
+    for incident in released_frames:
+        notify_red_threat(incident, LIVE_CAMERAS[0]["name"])
+    cameras = dict(st.session_state.get("cameras", {}))
+    for camera_id, camera in cameras.items():
+        label = _camera_name(str(camera_id))
+        for incident in list(camera.get("incidents", [])):
+            notify_red_threat(incident, label)
 
 
 def _render_waiting_state() -> None:
@@ -114,7 +328,7 @@ def _timeline_frame(released_frames: list[IncidentState]) -> IncidentState | Non
             st.session_state["live_timeline_slider"] = selected
         selected = int(
             st.select_slider(
-                "Frame Timeline",
+                "Live Feed Timeline",
                 options=options,
                 key="live_timeline_slider",
                 format_func=lambda value: f"Frame {value}",
@@ -125,6 +339,30 @@ def _timeline_frame(released_frames: list[IncidentState]) -> IncidentState | Non
         if int(frame.get("frame_index", 0)) == selected:
             return frame
     return released_frames[-1]
+
+
+def _filter_frames_by_threat(
+    released_frames: list[IncidentState],
+    threat_filter: str,
+) -> list[IncidentState]:
+    """Return frames filtered by the selected threat level."""
+    selected = str(threat_filter).strip().lower()
+    if selected == "all":
+        return released_frames
+    color_map = {
+        "critical": "red",
+        "high_alert": "orange",
+        "alert": "yellow",
+        "normal": "green",
+    }
+    target_color = color_map.get(selected, "")
+    if not target_color:
+        return released_frames
+    return [
+        frame
+        for frame in released_frames
+        if str(frame.get("threat_color", "")).strip().lower() == target_color
+    ]
 
 
 def _history_rows(released_frames: list[IncidentState]) -> list[dict[str, object]]:
@@ -143,36 +381,142 @@ def _history_rows(released_frames: list[IncidentState]) -> list[dict[str, object
     return rows
 
 
+def _history_summary_rows(released_frames: list[IncidentState]) -> list[dict[str, object]]:
+    """Return one camera-by-severity summary table for the history tab."""
+    camera_1 = {
+        "Camera": "Camera 1",
+        "🔴 Critical": 0,
+        "🟠 High Alert": 0,
+        "🟡 Alert": 0,
+        "🟢 Normal": 0,
+    }
+    for frame in released_frames:
+        color = str(frame.get("threat_color", "")).strip().lower()
+        if color == "red":
+            camera_1["🔴 Critical"] += 1
+        elif color == "orange":
+            camera_1["🟠 High Alert"] += 1
+        elif color == "yellow":
+            camera_1["🟡 Alert"] += 1
+        else:
+            camera_1["🟢 Normal"] += 1
+    return [
+        camera_1,
+        {
+            "Camera": "Camera 2",
+            "🔴 Critical": 1,
+            "🟠 High Alert": 2,
+            "🟡 Alert": 3,
+            "🟢 Normal": 5,
+        },
+        {
+            "Camera": "Camera W",
+            "🔴 Critical": 0,
+            "🟠 High Alert": 1,
+            "🟡 Alert": 2,
+            "🟢 Normal": 6,
+        },
+        {
+            "Camera": "Camera X",
+            "🔴 Critical": 0,
+            "🟠 High Alert": 1,
+            "🟡 Alert": 1,
+            "🟢 Normal": 7,
+        },
+        {
+            "Camera": "Camera Y",
+            "🔴 Critical": 0,
+            "🟠 High Alert": 0,
+            "🟡 Alert": 2,
+            "🟢 Normal": 8,
+        },
+        {
+            "Camera": "Camera Z",
+            "🔴 Critical": 0,
+            "🟠 High Alert": 0,
+            "🟡 Alert": 1,
+            "🟢 Normal": 9,
+        },
+    ]
+
+
 def _render_global_view(
     _live_state: IncidentState,
     released_frames: list[IncidentState],
 ) -> int | None:
-    """Render the original main dashboard under the camera map."""
-    render_camera_map()
-    _render_bolo_card()
-    live_tab, history_tab = st.tabs(["Live Incident", "Incident History"])
+    """Render the original main dashboard tabs."""
+    live_tab, history_tab, map_tab = st.tabs(
+        ["Live Incident", "Incident History", "Live Map"]
+    )
     with live_tab:
-        if not released_frames:
-            _render_waiting_state()
-        else:
-            selected = _timeline_frame(released_frames)
-            if selected is not None:
-                selected_bytes = _frame_bytes(str(selected.get("frame_b64", "")))
-                if selected_bytes:
-                    st.image(selected_bytes, width="stretch")
-                if render_report_card(selected, True, "global_live"):
-                    return int(selected.get("frame_index", 0))
+        selector_col, content_col = st.columns((1, 4))
+        options = {"Camera 1": "__default__", "Camera 2": LIVE_CAMERAS[1]["camera_id"]}
+        for camera in HARDCODED_CAMERAS:
+            options[str(camera["name"])] = str(camera["camera_id"])
+        with selector_col:
+            selected_label = st.selectbox(
+                "Camera",
+                options=list(options.keys()),
+                key="global_live_camera_selection",
+            )
+            threat_filter = st.selectbox(
+                "Threat Level",
+                options=["all", "critical", "high_alert", "alert", "normal"],
+                key="global_live_threat_filter",
+                format_func=lambda value: {
+                    "all": "All",
+                    "critical": "🔴 Critical",
+                    "high_alert": "🟠 High Alert",
+                    "alert": "🟡 Alert",
+                    "normal": "🟢 Normal",
+                }.get(value, str(value)),
+            )
+        selected_camera = options[selected_label]
+        with content_col:
+            if selected_camera == "__default__":
+                filtered_frames = _filter_frames_by_threat(released_frames, threat_filter)
+                if not released_frames:
+                    _render_waiting_state()
+                elif not filtered_frames:
+                    st.info("No incidents match the selected threat level.")
+                else:
+                    selected = _timeline_frame(filtered_frames)
+                    if selected is not None:
+                        selected_bytes = _frame_bytes(str(selected.get("frame_b64", "")))
+                        if selected_bytes:
+                            st.image(selected_bytes, width="stretch")
+                        if render_report_card(selected, True, "global_live"):
+                            return int(selected.get("frame_index", 0))
+            elif selected_camera == LIVE_CAMERAS[1]["camera_id"]:
+                camera = dict(st.session_state.get("cameras", {}).get(selected_camera, {}))
+                incidents = list(camera.get("incidents", []))
+                if not incidents:
+                    st.info(f"No live incidents yet for {selected_label}.")
+                else:
+                    selected = incidents[-1]
+                    selected_bytes = _frame_bytes(
+                        str(camera.get("current_frame") or selected.get("frame_b64", ""))
+                    )
+                    if selected_bytes:
+                        st.image(selected_bytes, width="stretch")
+                    if render_report_card(selected, True, f"global_live_{selected_camera.lower()}"):
+                        _confirm_camera_incident(selected_camera, str(selected.get("case_id", "")))
+                        st.rerun()
+            else:
+                st.info(f"{selected_label} is a simulated monitoring node. No live feed is attached.")
+                st.caption("Use Camera 1 or Camera 2 to view active incident frames.")
     with history_tab:
         if not released_frames:
             st.info("No incidents recorded yet.")
         else:
-            with st.expander("Incident History Table", expanded=False):
-                st.dataframe(_history_rows(released_frames), width="stretch")
             for frame in reversed(released_frames):
-                label = f"Frame {int(frame.get('frame_index', 0))} — {frame.get('case_id', '')}"
+                label = str(frame.get("case_id", "")).strip() or "Incident"
                 with st.expander(label, expanded=False):
                     if render_report_card(frame, True, f"global_history_{int(frame.get('frame_index', 0))}"):
                         return int(frame.get("frame_index", 0))
+    with map_tab:
+        _render_track_card()
+        render_camera_map()
     return None
 
 
@@ -184,11 +528,17 @@ def _render_camera_view(camera_id: str) -> None:
         st.session_state["active_camera"] = None
         st.rerun()
     st.title(next((cam["name"] for cam in LIVE_CAMERAS if cam["camera_id"] == camera_id), camera_id))
-    if st.session_state["tracking"]["active"] and st.session_state["tracking"]["camera_id"] == camera_id:
-        st.info("TRACKING ACTIVE")
-    upload = None if camera["video_path"] else st.file_uploader(f"Upload video for {camera_id}", type=["mp4", "mov"], key=f"upload_{camera_id}") if (camera_id != LIVE_CAMERAS[1]["camera_id"] or st.session_state["tracking"]["bolo_active"]) else None
-    if camera_id == LIVE_CAMERAS[1]["camera_id"] and not camera["video_path"] and not st.session_state["tracking"]["bolo_active"]:
-        st.info("Waiting for BOLO before Camera 2 can be activated")
+    tracking = dict(st.session_state["tracking"])
+    if tracking.get("active"):
+        if tracking.get("source_camera_id") == camera_id:
+            st.info("TRACKING SOURCE CAMERA")
+        elif tracking.get("search_camera_id") == camera_id:
+            st.info("TRACKING SEARCH ACTIVE")
+        else:
+            st.info("TRACKING MODE")
+    upload = None if camera["video_path"] else st.file_uploader(f"Upload video for {camera_id}", type=["mp4", "mov"], key=f"upload_{camera_id}") if (camera_id != LIVE_CAMERAS[1]["camera_id"] or tracking.get("active")) else None
+    if camera_id == LIVE_CAMERAS[1]["camera_id"] and not camera["video_path"] and not tracking.get("active"):
+        st.info("Waiting for active tracking before Camera 2 can be activated")
     if upload:
         path, token = _save_upload(upload, camera_id)
         if token != camera.get("upload_token"):
@@ -216,6 +566,8 @@ def _render_camera_view(camera_id: str) -> None:
 
 def render_dashboard(live_state: IncidentState, released_frames: list[IncidentState]) -> int | None:
     """Render the global view or one single-camera view."""
+    _sync_police_chat_alerts(released_frames)
+    render_police_chat()
     if st.session_state["active_camera"] is None:
         return _render_global_view(live_state, released_frames)
     _render_camera_view(str(st.session_state["active_camera"]))
@@ -227,7 +579,7 @@ def auto_refresh(active: bool, interval_seconds: float) -> None:
     cameras = dict(st.session_state.get("cameras", {}))
     processing = any(bool(camera.get("processing")) for camera in cameras.values())
     tracking = dict(st.session_state.get("tracking", {}))
-    if not active and not processing and not tracking.get("active") and not tracking.get("bolo_active"):
+    if not active and not processing and not tracking.get("active"):
         return
     time.sleep(interval_seconds if active or processing else 3.0)
     st.rerun()

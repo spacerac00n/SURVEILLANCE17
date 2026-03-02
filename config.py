@@ -29,7 +29,7 @@ ESCALATION_RULES = {
 COLOR_CRITERIA = {
     "green": {
         "label": "Normal",
-        "risk_range": [0.0, 2.0],
+        "risk_range": [0.0, 3.0],
         "extreme_cases": [
             "Calm campus walk (students with backpacks)",
             "Normal lecture crowd dispersing",
@@ -46,7 +46,7 @@ COLOR_CRITERIA = {
     },
     "yellow": {
         "label": "Monitor",
-        "risk_range": [2.1, 4.0],
+        "risk_range": [3.1, 6.0],
         "extreme_cases": [
             "Someone sitting alone on bench >10min",
             "Large group loitering near hall entrance",
@@ -63,7 +63,7 @@ COLOR_CRITERIA = {
     },
     "orange": {
         "label": "Alert",
-        "risk_range": [4.1, 7.0],
+        "risk_range": [6.1, 8.0],
         "extreme_cases": [
             "Person reaching into bag repeatedly",
             "Group forming tight circle (huddle)",
@@ -81,7 +81,7 @@ COLOR_CRITERIA = {
     },
     "red": {
         "label": "Critical",
-        "risk_range": [7.1, 10.0],
+        "risk_range": [8.1, 10.0],
         "extreme_cases": [
             "GUNS visible (long black object pointed at people)",
             "KNIFE STABBING (person lunging with blade motion)",
@@ -105,7 +105,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_API_KEY_2 = os.getenv("OPENAI_API_KEY_2")
 DATA_DIR = BASE_DIR / "data"
 VIDEO_PATH = str(BASE_DIR / "demo4.mp4")
-FRAME_INTERVAL_SECONDS = 1.5
+FRAME_INTERVAL_SECONDS = 2.0
 VLM_WORKER_COUNT = 3
 TIMELINE_WINDOW_SIZE = 12
 UI_REFRESH_SECONDS = 0.25
@@ -113,23 +113,23 @@ VISION_MODEL = "gpt-4.1"
 AGENT_MODEL = "gpt-4.1"
 TRACKING_VLM_MODEL = TRACKING_MODEL = "gpt-4o"
 HARDCODED_CAMERAS = [
-    {"camera_id": "CAM-01", "name": "CAM-01 Main Entrance", "status": "yellow"},
-    {"camera_id": "CAM-02", "name": "CAM-02 Platform Level", "status": "yellow"},
-    {"camera_id": "CAM-03", "name": "CAM-03 Bus Interchange", "status": "yellow"},
+    {"camera_id": "CAM-WW", "name": "Camera WW", "status": "yellow"},
+    {"camera_id": "CAM-XX", "name": "Camera XX", "status": "yellow"},
+    {"camera_id": "CAM-YY", "name": "Camera YY", "status": "yellow"},
+    {"camera_id": "CAM-ZZ", "name": "Camera ZZ", "status": "yellow"},
 ]
 LIVE_CAMERAS = [
     {"camera_id": "CAM-LIVE-01", "name": "Camera 1"},
     {"camera_id": "CAM-LIVE-02", "name": "Camera 2"},
 ]
-TRACKING_LOST_THRESHOLD = 2
-TRACKING_FRAME_INTERVAL = 3
 TRACKING_PROMPT_TEMPLATE = (
-    "You are a surveillance tracking AI. Track this specific subject. "
+    "You are a surveillance tracking AI. Check whether this specific subject is visible in the frame. "
     "Original description: {subject_description} "
     "Operator context: {user_extra_context} "
     "Return only valid JSON: subject_visible (bool), last_position (str), "
     "confidence (high|medium|low), notes (str)"
 )
+TRACKING_FRAME_INTERVAL = 2
 REACQUISITION_PROMPT_TEMPLATE = (
     "You are a surveillance tracking AI. Use this BOLO to reacquire the subject. "
     "BOLO: {bolo_text} Return only valid JSON: subject_visible (bool), "

@@ -5,17 +5,14 @@ from typing_extensions import TypedDict
 
 class TrackingState(TypedDict):
     active: bool
-    camera_id: str
+    source_camera_id: str
+    search_camera_id: str
     subject_description: str
     user_extra_context: str
-    observations: list[dict[str, object]]
-    consecutive_lost_count: int
-    subject_lost: bool
-    subject_lost_timestamp: str
-    bolo_active: bool
-    bolo_text: str
-    reacquired: bool
-    reacquired_camera_id: str
-    reacquired_frame_path: str | None
-    reacquired_timestamp: str
-    reacquired_confidence: str
+    priority: str
+    photo_b64: str
+    photo_name: str
+    sightings: list[dict[str, object]]
+    last_sighting: dict[str, object]
+    started_at: str
+    show_builder: bool
