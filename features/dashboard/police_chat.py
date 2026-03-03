@@ -12,6 +12,7 @@ _MESSAGES_KEY = "police_chat_messages"
 _RED_ALERT_SENT_KEY = "police_chat_red_alert_sent"
 _TRACKER_ALERT_TOKENS_KEY = "police_chat_tracker_alert_tokens"
 _DISPATCH_ALERT_TOKENS_KEY = "police_chat_dispatch_alert_tokens"
+_SHAKE_SECONDS = 4.0
 
 
 def _ensure_state() -> None:
@@ -21,6 +22,12 @@ def _ensure_state() -> None:
     st.session_state.setdefault(_RED_ALERT_SENT_KEY, False)
     st.session_state.setdefault(_TRACKER_ALERT_TOKENS_KEY, [])
     st.session_state.setdefault(_DISPATCH_ALERT_TOKENS_KEY, [])
+
+
+def _push_message(entry: dict[str, object]) -> None:
+    """Insert a new notification at the top of the chat."""
+    messages = list(st.session_state.get(_MESSAGES_KEY, []))
+    st.session_state[_MESSAGES_KEY] = [entry, *messages][:10]
 
 
 def _toggle() -> None:
@@ -34,9 +41,13 @@ def _humanize_threat(threat_type: str) -> str:
     return cleaned.title() if cleaned else "Unknown"
 
 
-def _alert_timestamp() -> str:
-    """Return the local display time for a new alert."""
-    return datetime.now().astimezone().strftime("%I:%M %p").lstrip("0")
+def _alert_metadata() -> dict[str, object]:
+    """Return display and animation timing metadata for a new alert."""
+    now = datetime.now().astimezone()
+    return {
+        "created_at": now.strftime("%I:%M %p").lstrip("0"),
+        "created_at_epoch": now.timestamp(),
+    }
 
 
 def _camera_number(camera_id: str) -> str:
@@ -71,6 +82,18 @@ def _confidence_percent(confidence: object) -> str:
     return f"{int(round(numeric))}%"
 
 
+def _shake_class(entry: dict[str, object]) -> str:
+    """Return the CSS class for newly raised notifications."""
+    try:
+        created_at_epoch = float(entry.get("created_at_epoch", 0.0))
+    except (TypeError, ValueError):
+        return ""
+    if created_at_epoch <= 0:
+        return ""
+    age_seconds = datetime.now().astimezone().timestamp() - created_at_epoch
+    return " police-chat-alert-shake" if 0.0 <= age_seconds <= _SHAKE_SECONDS else ""
+
+
 def notify_red_threat(
     incident: dict[str, object],
     camera_label: str,
@@ -84,18 +107,16 @@ def notify_red_threat(
         return
     threat = _humanize_threat(str(incident.get("threat_type", "none")))
     priority = str(incident.get("threat_label", "")).strip() or "Critical"
-    messages = list(st.session_state.get(_MESSAGES_KEY, []))
-    messages.append(
+    _push_message(
         {
             "role": "alert",
             "camera_label": str(camera_label),
             "case_id": case_id,
             "threat": threat,
             "priority": priority,
-            "created_at": _alert_timestamp(),
+            **_alert_metadata(),
         }
     )
-    st.session_state[_MESSAGES_KEY] = messages[-10:]
     st.session_state[_RED_ALERT_SENT_KEY] = True
     st.session_state[_OPEN_KEY] = True
 
@@ -112,17 +133,15 @@ def notify_tracker_match(
     seen_tokens = set(str(value) for value in st.session_state.get(_TRACKER_ALERT_TOKENS_KEY, []))
     if token in seen_tokens:
         return
-    messages = list(st.session_state.get(_MESSAGES_KEY, []))
-    messages.append(
+    _push_message(
         {
             "role": "tracker",
             "confidence": _confidence_percent(confidence),
             "camera_number": _camera_number(camera_id),
-            "created_at": _alert_timestamp(),
+            **_alert_metadata(),
             "threat_type": _humanize_threat(threat_type),
         }
     )
-    st.session_state[_MESSAGES_KEY] = messages[-10:]
     st.session_state[_TRACKER_ALERT_TOKENS_KEY] = list(seen_tokens | {token})
     st.session_state[_OPEN_KEY] = True
 
@@ -134,15 +153,14 @@ def notify_dispatch_sent(case_id: str) -> None:
     seen_tokens = set(str(value) for value in st.session_state.get(_DISPATCH_ALERT_TOKENS_KEY, []))
     if normalized_case_id in seen_tokens:
         return
-    messages = list(st.session_state.get(_MESSAGES_KEY, []))
-    messages.append(
+    _push_message(
         {
             "role": "dispatch_sent",
             "content": "Dispatch Sent 🚨",
-            "created_at": _alert_timestamp(),
+            "case_id": normalized_case_id,
+            **_alert_metadata(),
         }
     )
-    st.session_state[_MESSAGES_KEY] = messages[-10:]
     st.session_state[_DISPATCH_ALERT_TOKENS_KEY] = list(seen_tokens | {normalized_case_id})
     st.session_state[_OPEN_KEY] = True
 
@@ -164,6 +182,20 @@ def render_police_chat() -> None:
             letter-spacing:.08em;
             box-shadow:0 8px 18px rgba(5,16,34,.18);
             padding:0;
+        }
+        .police-chat-alert{
+            transform-origin:center;
+            will-change:transform, box-shadow;
+        }
+        .police-chat-alert-shake{
+            animation:police-chat-alert-shake .38s ease-in-out 10;
+        }
+        @keyframes police-chat-alert-shake{
+            0%,100%{transform:translateX(0);}
+            15%{transform:translateX(-4px) rotate(-1deg);}
+            35%{transform:translateX(4px) rotate(1deg);}
+            55%{transform:translateX(-3px) rotate(-0.8deg);}
+            75%{transform:translateX(3px) rotate(0.8deg);}
         }
         </style>
         """,
@@ -187,6 +219,7 @@ def render_police_chat() -> None:
     else:
         for entry in messages:
             role = str(entry.get("role", ""))
+            shake_class = _shake_class(entry)
             if role == "alert":
                 camera_label = html.escape(str(entry.get("camera_label", "Unknown camera")))
                 case_id = html.escape(str(entry.get("case_id", "unknown-case")))
@@ -194,7 +227,7 @@ def render_police_chat() -> None:
                 priority = html.escape(str(entry.get("priority", "Critical")))
                 created_at = html.escape(str(entry.get("created_at", "")))
                 st.sidebar.markdown(
-                    "<div style='padding:0.85rem 0.95rem;margin:0.4rem 0 0.7rem;"
+                    f"<div class='police-chat-alert{shake_class}' style='padding:0.85rem 0.95rem;margin:0.4rem 0 0.7rem;"
                     "border-radius:0.75rem;border:1px solid rgba(255,59,48,0.75);"
                     "background:#000000;color:#ffffff;'>"
                     f"<p style='margin:0 0 0.35rem;line-height:1.5;font-weight:800;'>🔴 {camera_label}</p>"
@@ -215,7 +248,7 @@ def render_police_chat() -> None:
                 created_at = html.escape(str(entry.get("created_at", "")))
                 threat_type = html.escape(str(entry.get("threat_type", "Unknown")))
                 st.sidebar.markdown(
-                    "<div style='padding:0.85rem 0.95rem;margin:0.4rem 0 0.7rem;"
+                    f"<div class='police-chat-alert{shake_class}' style='padding:0.85rem 0.95rem;margin:0.4rem 0 0.7rem;"
                     "border-radius:0.75rem;border:1px solid rgba(255,255,255,0.16);"
                     "background:#000000;color:#ffffff;'>"
                     "<p style='margin:0 0 0.35rem;line-height:1.5;font-weight:800;'>‼️ Tracker</p>"
@@ -229,12 +262,14 @@ def render_police_chat() -> None:
                 continue
             if role == "dispatch_sent":
                 content = html.escape(str(entry.get("content", "Dispatch Sent 🚨")))
+                case_id = html.escape(str(entry.get("case_id", "")))
                 created_at = html.escape(str(entry.get("created_at", "")))
                 st.sidebar.markdown(
-                    "<div style='padding:0.85rem 0.95rem;margin:0.4rem 0 0.7rem;"
+                    f"<div class='police-chat-alert{shake_class}' style='padding:0.85rem 0.95rem;margin:0.4rem 0 0.7rem;"
                     "border-radius:0.75rem;border:1px solid rgba(239,68,68,0.45);"
                     "background:#000000;color:#ffffff;'>"
                     f"<p style='margin:0;line-height:1.5;font-weight:800;color:#ffffff;'>{content}</p>"
+                    f"<p style='margin:0.28rem 0 0;line-height:1.45;color:rgba(255,255,255,0.82);'>{case_id}</p>"
                     f"<div style='margin-top:0.55rem;padding-top:0.45rem;"
                     "border-top:1px solid rgba(255,255,255,0.12);font-size:0.78rem;"
                     "line-height:1.3;color:rgba(255,255,255,0.72);text-align:right;'>"
@@ -245,7 +280,7 @@ def render_police_chat() -> None:
                 continue
             content = html.escape(str(entry.get("content", "")))
             st.sidebar.markdown(
-                "<div style='padding:0.8rem 0.9rem;margin:0.4rem 0 0.7rem;"
+                f"<div class='police-chat-alert{shake_class}' style='padding:0.8rem 0.9rem;margin:0.4rem 0 0.7rem;"
                 "border-radius:0.75rem;border:1px solid rgba(255,255,255,0.14);"
                 "background:#000000;color:#ffffff;'>"
                 f"<p style='margin:0;line-height:1.55;'>{content}</p>"

@@ -17,6 +17,30 @@ def _humanize(text: str) -> str:
     return text.replace("_", " ").strip() or "unknown"
 
 
+def _confidence_display(value: object) -> str:
+    """Return a readable confidence score for the report card."""
+    text = str(value).strip().lower()
+    mapping = {
+        "low": "25%",
+        "medium": "50%",
+        "high": "75%",
+        "very high": "90%",
+        "very_high": "90%",
+        "certain": "90%",
+    }
+    if text in mapping:
+        return mapping[text]
+    if text.endswith("%"):
+        return text
+    try:
+        numeric = float(text)
+    except ValueError:
+        return "25%"
+    if numeric <= 1:
+        numeric *= 100
+    return f"{int(round(numeric))}%"
+
+
 def _record_for_state(state: IncidentState) -> dict[str, object]:
     """Return the cached incident record or build one on demand."""
     record = dict(state.get("ai_incident_record", {}))
@@ -182,6 +206,8 @@ def render_report_card(
     badge_style = badge_styles.get(color, badge_styles["green"])
     tracking = dict(st.session_state.get("tracking", {}))
     track_status = "Active" if bool(tracking.get("active")) else "Ready"
+    confidence_label = _humanize(str(details.get("confidence", "low"))).title()
+    confidence_score = _confidence_display(details.get("confidence", "low"))
     source_name = "Camera 1" if _source_camera_id(state) == LIVE_CAMERAS[0]["camera_id"] else _source_camera_id(state)
     frame_meta = (
         f"Frame #{int(state.get('frame_index', 0))} | "
@@ -217,7 +243,8 @@ def render_report_card(
                 "<div style='background:#0f172a;border:1px solid rgba(255,255,255,0.08);"
                 "border-radius:16px;padding:1rem;color:#ffffff;font-size:0.98rem;"
                 "font-weight:600;line-height:1.45;'>"
-                f"Track: {html.escape(track_status)}"
+                f"Track: {html.escape(track_status)}<br>"
+                f"Confidence: {html.escape(confidence_score)} ({html.escape(confidence_label)})"
                 "</div>"
                 "<div style='background:#0f172a;border:1px solid rgba(255,255,255,0.08);"
                 "border-top:0;border-radius:0 0 16px 16px;padding:0 1rem 1rem;color:rgba(255,255,255,0.64);"
