@@ -1,7 +1,10 @@
 # Testing of Tracking feature
+Note: The other cameras are props cameras, only camera 1 and 2 are usable 
+
 In camera 2, ingest demo2.mp4 and go to the "Tracker" tab and wait for processing
-Once processed finish, and threat is detected, there will be a glow on camera 2
-to simulate the suspect has been detected by camera 2
+Once processed finish, and threat is detected, there will be 
+1) a glow on camera 2
+2) notification 
 
 
 # Testing of local LLM 
